@@ -739,7 +739,23 @@ async function handleSave(req: Request): Promise<Response> {
   }
 }
 
+console.log(`Root: ${app.root}`);
 // ---------------- Server ----------------
 
 console.log(`Root: ${app.root}`);
-console.log(`Listening on http://localhost:${app.port}${app.
+console.log(`Listening on http://localhost:${app.port}${app.authUser ? " (Basic Auth enabled)" : ""}`);
+
+serve(async (req) => {
+    try {
+        const url = new URL(req.url);
+        if (req.method === "GET" && url.pathname === "/") return await handleIndex(req);
+        if (req.method === "GET" && url.pathname === "/browse") return await handleBrowse(req);
+        if (req.method === "GET" && url.pathname === "/edit") return await handleEdit(req, url);
+        if (req.method === "POST" && url.pathname === "/save") return await handleSave(req);
+
+        return new Response("Not Found", { status: 404 });
+    } catch (e) {
+        console.error(e);
+        return new Response("Internal Server Error", { status: 500 });
+    }
+}, { port: app.port });
