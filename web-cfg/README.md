@@ -8,6 +8,7 @@ A minimal local web app to view and edit TOML-based “.conf” files using your
 - Supports basic validation via a small, pluggable schema (min/max, pattern, enum, required, type hints).
 - Can enable Basic Auth when exposed beyond localhost.
 
+
 ## Table of Contents
 - Features
 - Quick Start
