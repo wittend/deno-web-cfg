@@ -1,8 +1,10 @@
 ## !!! Do NOT Use! WORK IN PROGESS!  
-### Expect Dire consequences if you run this! 
-### Completly UNTESTED!
+#### Expect Dire consequences if you run this! 
+#### Completly UNTESTED!
 
 # TOML Config Editor (Deno)
+#### A project to allow creation, editing, and saving TOML configuration files on machines running ka9q (phil karn)'s ka9q-radio servers.
+
 A minimal local web app to view and edit TOML-based “.conf” files using your browser. It:
 - Opens any .conf file under a chosen root directory, or falls back to a .conf.example / .conf.template if the target file doesn’t exist.
 - Renders nested objects/arrays into an HTML form with sensible field types (booleans, numbers, date, datetime-local, color, email, url, password).
