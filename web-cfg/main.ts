@@ -7,6 +7,15 @@
 // - Simple validation schema (min/max/pattern/enum/required/type)
 // - Optional Basic Auth via --auth=user:pass
 
+// Basic run (serves on http://localhost:8787)
+// deno run --allow-read --allow-write --allow-net main.ts --root=.
+
+// Change port
+// deno run --allow-read --allow-write --allow-net main.ts --root=. --port=8080
+
+// Enable Basic Auth (username: admin, password: s3cret)
+// deno run --allow-read --allow-write --allow-net main.ts --root=. --auth=admin:s3cret
+
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
 import * as toml from "https://deno.land/std@0.224.0/toml/mod.ts";
@@ -733,12 +742,4 @@ async function handleSave(req: Request): Promise<Response> {
 // ---------------- Server ----------------
 
 console.log(`Root: ${app.root}`);
-console.log(`Listening on http://localhost:${app.port}${app.authUser ? " (Basic Auth enabled)" : ""}`);
-
-serve(async (req) => {
-  try {
-    const url = new URL(req.url);
-    if (req.method === "GET" && url.pathname === "/") return await handleIndex(req);
-    if (req.method === "GET" && url.pathname === "/browse") return await handleBrowse(req);
-    if (req.method === "GET" && url.pathname === "/edit") return await handleEdit(req, url);
-    if (an you create
+console.log(`Listening on http://localhost:${app.port}${app.
