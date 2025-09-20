@@ -1,0 +1,21 @@
+Initial Query:
+
+I want to create an application using Deno that allows a user to read in an arbitrary local TOML configuration 
+file with a '.conf' extension (if one exists) or an equivalent template/exaample file and present its 
+contents as a fielded form in HTML5 for editing. It should show any existing data and allow in appropriate
+field types and allow saving the changed data to either the original file or to a new file with a different name. 
+
+Ai suggested enhancemants so I hadd it generate them.
+- Preserve TOML comments/formatting by using a parser that supports round-trip formatting (or by keeping a sidecar for comments).
+- Support more HTML5 types (date, datetime-local, color) via value heuristics or a schema.
+- Provide a directory browser under the configured root to discover .conf files.
+- Validation rules for known keys (min/max for numbers, enum dropdowns, etc.).
+- Authentication if you expose this app beyond localhost.
+
+
+NOTE: I had to expand my query buffer from 5% (I used 20%)
+
+
+Can you create Github style documentation for this project including instructions for installing Deno on Debian/Ubuntu Linux?
+
+

@@ -1,0 +1,498 @@
+export function add(a: number, b: number): number {
+  return a + b;
+}
+
+// Learn more at https://docs.deno.com/runtime/manual/examples/module_metadata#concepts
+if (import.meta.main) {
+  console.log("Add 2 + 3 =", add(2, 3));
+}
+// main.ts
+// Deno web app to edit TOML-based .conf files via HTML form
+
+// Usage:
+// deno run --allow-read --allow-write --allow-net main.ts --root=.
+//
+// Then open http://localhost:8787
+
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
+import * as toml from "https://deno.land/std@0.224.0/toml/mod.ts";
+
+type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
+
+interface AppConfig {
+    root: string; // root directory for reading/writing files
+    port: number; // http port
+}
+
+function parseArgs(args: string[]): AppConfig {
+    const config: AppConfig = {
+        root: Deno.cwd(),
+        port: 8787,
+    };
+    for (const a of args) {
+        if (a.startsWith("--root=")) config.root = path.resolve(a.substring("--root=".length));
+        if (a.startsWith("--port=")) config.port = Number(a.substring("--port=".length)) || 8787;
+    }
+    return config;
+}
+
+const app = parseArgs(Deno.args);
+
+function ensureInsideRoot(candidate: string, root: string) {
+    const full = path.resolve(candidate);
+    const normalizedRoot = path.resolve(root);
+    if (!full.startsWith(normalizedRoot + path.SEP) && full !== normalizedRoot) {
+        throw new Error("Path is outside the permitted root directory");
+    }
+    return full;
+}
+
+async function fileExists(p: string): Promise<boolean> {
+    try {
+        const st = await Deno.stat(p);
+        return st.isFile;
+    } catch {
+        return false;
+    }
+}
+
+async function pickSourceFile(requested: string): Promise<string | null> {
+    // If requested exists: use it. Else try .example or .template variants
+    if (await fileExists(requested)) return requested;
+
+    const variants = [`${requested}.example`, `${requested}.template`];
+    for (const v of variants) {
+        if (await fileExists(v)) return v;
+    }
+    return null;
+}
+
+async function readTomlFile(filePath: string): Promise<{ data: Json; text: string }> {
+    const text = await Deno.readTextFile(filePath);
+    // Parse TOML into JS object
+    const data = toml.parse(text) as Json;
+    return { data, text };
+}
+
+function toToml(data: Json): string {
+    // stringify to TOML
+    // Note: std toml stringify requires a plain object; arrays and primitives at root are not valid TOML documents
+    if (data === null || typeof data !== "object" || Array.isArray(data)) {
+        // Wrap non-object roots under a key
+        return toml.stringify({ value: data as unknown });
+    }
+    return toml.stringify(data as Record<string, unknown>);
+}
+
+/* -------------------- HTML rendering -------------------- */
+
+function escapeHtml(s: string): string {
+    return s
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+}
+
+function inputName(path: string[]): string {
+    // Use bracket notation for nested, e.g., settings[db][host], arr[0]
+    let name = path[0] ?? "";
+    for (let i = 1; i < path.length; i++) {
+        name += `[${path[i]}]`;
+    }
+    return name;
+}
+
+function renderPrimitiveInput(keyPath: string[], value: Json) {
+    const name = inputName(keyPath);
+    if (typeof value === "boolean") {
+        return `
+      <label>
+        <input type="checkbox" name="${escapeHtml(name)}" ${value ? "checked" : ""}>
+      </label>
+    `;
+    }
+    if (typeof value === "number") {
+        return `<input type="number" step="any" name="${escapeHtml(name)}" value="${Number.isFinite(value) ? value : ""}" />`;
+    }
+    // default: string or null
+    const v = value === null ? "" : String(value);
+    return `<input type="text" name="${escapeHtml(name)}" value="${escapeHtml(v)}" />`;
+}
+
+function renderArray(keyPath: string[], arr: Json[]): string {
+    const legend = keyPath.length ? keyPath[keyPath.length - 1] : "(array)";
+    const itemsHtml = arr
+        .map((v, i) => {
+            const itemPath = [...keyPath, String(i)];
+            return `
+        <div class="array-item">
+          ${renderValue(itemPath, v)}
+          <button class="remove-item" data-path="${escapeHtml(inputName(itemPath))}" type="button">Remove</button>
+        </div>
+      `;
+        })
+        .join("");
+
+    const containerName = inputName(keyPath);
+    return `
+    <fieldset class="array">
+      <legend>${escapeHtml(legend)} (array)</legend>
+      <div data-array="${escapeHtml(containerName)}">
+        ${itemsHtml || '<div class="empty-note">No items</div>'}
+      </div>
+      <button class="add-item" data-path="${escapeHtml(containerName)}" type="button">Add item</button>
+    </fieldset>
+  `;
+}
+
+function renderObject(keyPath: string[], obj: Record<string, Json>): string {
+    const legend = keyPath.length ? keyPath[keyPath.length - 1] : "(root)";
+    const fields = Object.entries(obj)
+        .map(([k, v]) => {
+            const p = [...keyPath, k];
+            return `
+        <div class="field">
+          <label><span class="key">${escapeHtml(k)}</span>
+            ${renderValue(p, v)}
+          </label>
+        </div>
+      `;
+        })
+        .join("");
+
+    return `
+    <fieldset class="object">
+      <legend>${escapeHtml(legend)}</legend>
+      ${fields || '<div class="empty-note">No fields</div>'}
+    </fieldset>
+  `;
+}
+
+function renderValue(keyPath: string[], v: Json): string {
+    if (Array.isArray(v)) {
+        return renderArray(keyPath, v);
+    }
+    if (v !== null && typeof v === "object") {
+        return renderObject(keyPath, v as Record<string, Json>);
+    }
+    return renderPrimitiveInput(keyPath, v);
+}
+
+function pageLayout(body: string, extraHead = ""): string {
+    return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TOML Config Editor</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1rem auto; max-width: 900px; padding: 0 1rem; }
+  header { display: flex; align-items: center; gap: 1rem; }
+  fieldset { margin: 1rem 0; padding: 1rem; }
+  legend { font-weight: 600; }
+  .field { margin: .5rem 0; display: flex; gap: .5rem; align-items: center; }
+  .field > label { display: flex; gap: .5rem; align-items: center; width: 100%; }
+  .field input[type=text], .field input[type=number] { width: 100%; max-width: 28rem; }
+  .array-item { display: flex; align-items: center; gap: .5rem; margin: .25rem 0; }
+  .empty-note { color: #666; font-style: italic; }
+  .actions { display: flex; gap: .5rem; margin-top: 1rem; }
+  .path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .tip { color: #555; font-size: 0.9rem; }
+</style>
+${extraHead}
+</head>
+<body>
+${body}
+</body>
+</html>`;
+}
+
+function indexPage(): string {
+    const body = `
+    <header>
+      <h1>TOML Config Editor</h1>
+    </header>
+    <p>Root directory: <span class="path">${escapeHtml(app.root)}</span></p>
+    <form method="get" action="/edit">
+      <label>Relative path to .conf file:
+        <input type="text" name="file" placeholder="config/app.conf" required />
+      </label>
+      <p class="tip">
+        If the file does not exist, the server will try "<code>.example</code>" or "<code>.template</code>" variants.
+      </p>
+      <button type="submit">Open</button>
+    </form>
+  `;
+    return pageLayout(body);
+}
+
+function editPage(fileRel: string, usingPath: string, data: Json): string {
+    const formHtml = renderValue([], data);
+    const body = `
+    <header>
+      <h1>Edit: <span class="path">${escapeHtml(fileRel)}</span></h1>
+    </header>
+    <p class="tip">
+      Source file used: <span class="path">${escapeHtml(path.relative(app.root, usingPath))}</span>
+    </p>
+    <form id="config-form">
+      ${formHtml}
+      <div class="actions">
+        <button type="button" id="save">Save</button>
+        <label>Save As:
+          <input type="text" id="saveAs" placeholder="${escapeHtml(fileRel)}" />
+        </label>
+        <button type="button" id="save-as">Save As…</button>
+        <a href="/" style="margin-left:auto">Back</a>
+      </div>
+      <input type="hidden" id="fileRel" value="${escapeHtml(fileRel)}" />
+      <input type="hidden" id="sourcePath" value="${escapeHtml(path.relative(app.root, usingPath))}" />
+    </form>
+    <script type="module">
+      function pathToArray(name) {
+        // Convert bracket notation: a[b][0] -> ["a","b","0"]
+        const parts = [];
+        let i = 0;
+        let current = "";
+        // Split by [ and ] while keeping names
+        // Easier approach:
+        const firstBracket = name.indexOf('[');
+        if (firstBracket === -1) return [name];
+        parts.push(name.slice(0, firstBracket));
+        let rest = name.slice(firstBracket);
+        const re = /\\[([^\\]]*)\\]/g;
+        let m;
+        while ((m = re.exec(rest))) {
+          parts.push(m[1]);
+        }
+        return parts;
+      }
+
+      function setNested(target, keys, value) {
+        let obj = target;
+        for (let i = 0; i < keys.length - 1; i++) {
+          const k = keys[i];
+          const nextK = keys[i + 1];
+          const isIndex = String(Number(nextK)) === nextK && nextK !== "";
+          if (!(k in obj)) {
+            obj[k] = isIndex ? [] : {};
+          }
+          if (Array.isArray(obj[k]) && !isIndex) {
+            // convert array to object if needed
+            obj[k] = {};
+          }
+          obj = obj[k];
+        }
+        const lastKey = keys[keys.length - 1];
+        const isIndex = String(Number(lastKey)) === lastKey && lastKey !== "";
+        if (Array.isArray(obj) && !isIndex) {
+          // convert array to object
+          const tmp = {};
+          Object.assign(tmp, obj);
+          obj = tmp;
+        }
+        // Coerce boolean and number types based on input type presence
+        obj[lastKey] = value;
+      }
+
+      function coerceValue(input) {
+        if (input.type === "checkbox") return input.checked;
+        if (input.type === "number") {
+          const n = Number(input.value);
+          return Number.isFinite(n) ? n : "";
+        }
+        return input.value;
+      }
+
+      function formToJson(formElement) {
+        const root = {};
+        // We will iterate all inputs except buttons and hidden meta fields
+        const inputs = formElement.querySelectorAll("input, textarea, select");
+        inputs.forEach(input => {
+          const { name, type } = input;
+          if (!name || input.id === "saveAs" || input.id === "fileRel" || input.id === "sourcePath") return;
+          // For arrays and objects, our renderer wraps nested elements as fieldsets
+          // The primitive inputs carry the names; we skip fieldset containers.
+          const value = coerceValue(input);
+          const keys = pathToArray(name);
+          setNested(root, keys, value);
+        });
+
+        // Normalize arrays: whenever an object has numeric consecutive keys, convert to array
+        function normalize(node) {
+          if (Array.isArray(node)) {
+            return node.map(normalize);
+          } else if (node && typeof node === "object") {
+            const keys = Object.keys(node);
+            const numeric = keys.every(k => String(Number(k)) === k);
+            if (numeric) {
+              const arr = [];
+              const sorted = keys.map(Number).sort((a,b)=>a-b);
+              for (const i of sorted) arr.push(normalize(node[String(i)]));
+              return arr;
+            }
+            const out = {};
+            for (const k of keys) out[k] = normalize(node[k]);
+            return out;
+          }
+          return node;
+        }
+
+        return normalize(root);
+      }
+
+      // Array UI handlers: add/remove
+      //       document.addEventListener("click", (e) => {
+      //         const t = e.target;
+      //         if (!(t instanceof HTMLElement)) return;
+      //         if (t.matches(".add-item")) {
+      //           const containerName = t.getAttribute("data-path");
+      //           const holder = document.querySelector('[data-array="' + CSS.escape(containerName) + '"]');
+      //           if (!holder) return;
+      //           // Insert a new item index = current count
+      //           const count = holder.querySelectorAll(".array-item").length;
+      //           // Create a simple text input by default
+      //           const name = containerName + "[" + count + "]";
+      //           const div = document.createElement("div");
+      //           div.className = "array-item";
+      //           div.innerHTML = '<input type="text" name="' + name + '" value="" /> <button class="remove-item" data-path="' + name + '" type="button">Remove</button>';
+      //           holder.appendChild(div);
+      //         } else if (t.matches(".remove-item")) {
+      //           const div = t.closest(".array-item");
+      //           if (div) div.remove();
+      //         }
+      //       });
+      // 
+      //       async function save(kind) {
+      //         const form = document.getElementById("config-form");
+      //         const data = formToJson(form);
+      //         const fileRel = (document.getElementById("fileRel") as HTMLInputElement).value;
+      //         const sourcePath = (document.getElementById("sourcePath") as HTMLInputElement).value;
+      //         const saveAs = (document.getElementById("saveAs") as HTMLInputElement).value.trim();
+      //         const body = {
+      //           fileRel,
+      //           sourcePath,
+      //           data,
+      //           mode: kind,
+      //           saveAs: saveAs || null
+      //         };
+      //         const res = await fetch("/save", {
+      //           method: "POST",
+      //           headers: { "content-type": "application/json" },
+      //           body: JSON.stringify(body)
+      //         });
+      //         const json = await res.json();
+      //         if (!res.ok) {
+      //           alert("Save failed: " + json.error);
+      //           return;
+      //         }
+      //         alert("Saved to: " + json.savedTo);
+      //       }
+      // 
+      //       document.getElementById("save")?.addEventListener("click", () => save("overwrite"));
+      //       document.getElementById("save-as")?.addEventListener("click", () => save("saveAs"));
+      //     </script>
+      //   `;
+
+//   return pageLayout(body);
+// }
+//
+// /* -------------------- HTTP handlers -------------------- */
+//
+// async function handleIndex(): Promise<Response> {
+//   return new Response(indexPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
+// }
+//
+// async function handleEdit(url: URL): Promise<Response> {
+//   const fileRel = url.searchParams.get("file");
+//   if (!fileRel) return new Response("Missing ?file=...", { status: 400 });
+//
+//   const candidate = ensureInsideRoot(path.join(app.root, fileRel), app.root);
+//   const source = await pickSourceFile(candidate);
+//   if (!source) {
+//     const msg = pageLayout(`
+//       <h1>File not found</h1>
+//       <p>Could not find: <span class="path">${escapeHtml(path.relative(app.root, candidate))}</span></p>
+//       <p>Also tried: <code>.example</code> and <code>.template</code> variants.</p>
+//       <p><a href="/">Back</a></p>
+//     `);
+//     return new Response(msg, { headers: { "content-type": "text/html; charset=utf-8" }, status: 404 });
+//   }
+//
+//   try {
+//     const { data } = await readTomlFile(source);
+//     return new Response(
+//       editPage(fileRel, source, data),
+//       { headers: { "content-type": "text/html; charset=utf-8" } }
+//     );
+//   } catch (e) {
+//     console.error(e);
+//     return new Response("Failed to parse TOML: " + e.message, { status: 400 });
+//   }
+// }
+//
+// async function handleSave(req: Request): Promise<Response> {
+//   try {
+//     const payload = await req.json();
+//     const fileRel: string = payload.fileRel;
+//     const sourcePathRel: string = payload.sourcePath; // relative to root
+//     const mode: "overwrite" | "saveAs" = payload.mode;
+//     const saveAs: string | null = payload.saveAs;
+//     const data: Json = payload.data;
+//
+//     if (!fileRel || !sourcePathRel || !mode) {
+//       return Response.json({ error: "Missing required fields" }, { status: 400 });
+//     }
+//
+//     const sourcePath = ensureInsideRoot(path.join(app.root, sourcePathRel), app.root);
+//     const defaultTarget = ensureInsideRoot(path.join(app.root, fileRel), app.root);
+//
+//     let targetPath: string;
+//     if (mode === "overwrite") {
+//       // If original .conf file exists, save to it; otherwise save to the sourcePath (which may be .example/.template)
+//       targetPath = (await fileExists(defaultTarget)) ? defaultTarget : sourcePath;
+//     } else {
+//       if (!saveAs) return Response.json({ error: "Missing saveAs name" }, { status: 400 });
+//       targetPath = ensureInsideRoot(path.join(app.root, saveAs), app.root);
+//     }
+//
+//     // Ensure parent directory exists
+//     await Deno.mkdir(path.dirname(targetPath), { recursive: true });
+//
+//     const tomlText = toToml(data);
+//     await Deno.writeTextFile(targetPath, tomlText, { create: true });
+//
+//     return Response.json({ ok: true, savedTo: path.relative(app.root, targetPath) });
+//   } catch (e) {
+//     console.error(e);
+//     return Response.json({ error: e.message ?? String(e) }, { status: 500 });
+//   }
+// }
+//
+// /* -------------------- Server -------------------- */
+//
+// console.log(`Root: ${app.root}`);
+// console.log(`Listening on http://localhost:${app.port}`);
+//
+// serve(async (req) => {
+//   try {
+//     const url = new URL(req.url);
+//     if (req.method === "GET" && url.pathname === "/") return await handleIndex();
+//     if (req.method === "GET" && url.pathname === "/edit") return await handleEdit(url);
+//     if (req.method === "POST" && url.pathname === "/save") return await handleSave(req);
+//
+//     return new Response("Not Found", { status: 404 });
+//   } catch (e) {
+//     console.error(e);
+//     return new Response("Internal Server Error", { status: 500 });
+//   }
+// }, { port: app.port });
+
+    - Preserve TOML comments/formatting by using a parser that supports round-trip formatting (or by keeping a sidecar for comments).
+    - Support more HTML5 types (date, datetime-local, color) via value heuristics or a schema.
+    - Provide a directory browser under the configured root to discover .conf files.
+    - Validation rules for known keys (min/max for numbers, enum dropdowns, etc.).
+    - Authentication if you expose this app beyond localhost.
+
