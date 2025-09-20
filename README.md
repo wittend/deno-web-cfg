@@ -1,3 +1,4 @@
+## <span style="color: #RRGGBB">!!! Do NOt Use.  WORK IN PROGESS!  Expect Dire consequences if you run this! Completly UNTESTED!</span>
 # TOML Config Editor (Deno)
 A minimal local web app to view and edit TOML-based “.conf” files using your browser. It:
 - Opens any .conf file under a chosen root directory, or falls back to a .conf.example / .conf.template if the target file doesn’t exist.
@@ -19,18 +20,6 @@ A minimal local web app to view and edit TOML-based “.conf” files using your
 - Preserve Formatting and Comments
 - Security and Permissions
 - Systemd Service (optional)
-- Development
-- FAQ
-- License
-
-## Features
-- Edit .conf TOML files in the browser
-- Automatic fallback to .conf.example or .conf.template
-- HTML5 input types for common patterns (date, datetime-local, color, email, url, password)
-- Array add/remove UI
-- Directory browser for .conf files
-- “Preserve formatting” toggle to keep comments and layout where possible
-- “Save” and “Save As” with root-directory sandboxing
 - Optional Basic Auth
 
 ## Quick Start
