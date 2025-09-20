@@ -1,4 +1,3 @@
-```typescript
 // main.ts
 // Deno web app to edit TOML-based .conf files via HTML form with enhancements:
 // - Optional formatting-preserving save (best-effort scalar patching)
@@ -75,11 +74,10 @@ function checkAuth(req: Request): boolean {
 }
 
 // ---------------- File helpers ----------------
-
 function ensureInsideRoot(candidate: string, root: string) {
   const full = path.resolve(candidate);
   const normalizedRoot = path.resolve(root);
-  if (!full.startsWith(normalizedRoot + path.SEP) && full !== normalizedRoot) {
+  if (!full.startsWith(normalizedRoot + path.SEPARATOR) && full !== normalizedRoot) {
     throw new Error("Path is outside the permitted root directory");
   }
   return full;
