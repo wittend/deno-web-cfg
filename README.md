@@ -1,4 +1,5 @@
-## <span style="color: #RRGGBB">!!! Do NOt Use.  WORK IN PROGESS!  Expect Dire consequences if you run this! Completly UNTESTED!</span>
+## !!! Do NOt Use.  WORK IN PROGESS!  Expect Dire consequences if you run this! Completly UNTESTED!
+
 # TOML Config Editor (Deno)
 A minimal local web app to view and edit TOML-based “.conf” files using your browser. It:
 - Opens any .conf file under a chosen root directory, or falls back to a .conf.example / .conf.template if the target file doesn’t exist.
