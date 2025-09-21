@@ -518,6 +518,12 @@ function editPage(
       <textarea id="originalTextView" readonly style="width:100%;height:200px;font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">${escapeHtml(originalText)}</textarea>
     </fieldset>
 
+    <fieldset>
+      <legend>Preview: TOML to be saved</legend>
+      <textarea id="previewToml" readonly style="width:100%;height:220px;font-family:ui-monospace, SFMono-Regular, Menlo, monospace;"></textarea>
+      <div class="tip">This shows the TOML that will be written when you click Save. It updates as you edit fields.</div>
+    </fieldset>
+
     <form id="config-form">
       ${formHtml}
       <div class="actions">
@@ -534,6 +540,69 @@ function editPage(
       <input type="hidden" id="originalText" value="${escapeHtml(originalText)}" />
     </form>
     <script type="module">
+      // Minimal TOML stringify in the browser to produce preview text.
+      // Matches server semantics (always quote strings).
+      function quoteTomlString(s) {
+        return '"' + String(s).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"') + '"';
+      }
+      function valueToToml(v, indent = "") {
+        if (v === null || v === undefined) return "null";
+        if (typeof v === "string") return quoteTomlString(v);
+        if (typeof v === "number") return Number.isFinite(v) ? String(v) : "0";
+        if (typeof v === "boolean") return v ? "true" : "false";
+        if (Array.isArray(v)) {
+          // homogeneous simple arrays only for preview; fallback to JSON-like
+          const parts = v.map((x) => {
+            const s = valueToToml(x, indent);
+            return s.includes("\\n") ? quoteTomlString(String(x)) : s;
+          });
+          return "[" + parts.join(", ") + "]";
+        }
+        if (typeof v === "object") {
+          // Inline simple tables otherwise will be emitted via sections by objectToToml
+          const keys = Object.keys(v);
+          const simple = keys.every(k => v[k] === null || ["string","number","boolean"].includes(typeof v[k]));
+          if (simple) {
+            const entries = keys.map(k => k + " = " + valueToToml(v[k], indent));
+            return "{ " + entries.join(", ") + " }";
+          }
+        }
+        return quoteTomlString(String(v));
+      }
+      function objectToToml(obj, parentPath = []) {
+        const lines = [];
+        // First emit scalar keys in this table
+        const scalars = [];
+        const subtables = [];
+        for (const [k, v] of Object.entries(obj || {})) {
+          if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+            subtables.push([k, v]);
+          } else {
+            scalars.push([k, v]);
+          }
+        }
+        if (parentPath.length > 0) {
+          lines.push("[" + parentPath.join(".") + "]");
+        }
+        for (const [k, v] of scalars) {
+          lines.push(k + " = " + valueToToml(v));
+        }
+        for (const [k, v] of subtables) {
+          const sub = objectToToml(v, [...parentPath, k]);
+          if (sub) {
+            if (lines.length) lines.push(""); // blank line between sections
+            lines.push(sub);
+          }
+        }
+        return lines.join("\\n");
+      }
+      function toTomlPreview(data) {
+        if (data === null || typeof data !== "object" || Array.isArray(data)) {
+          return objectToToml({ value: data });
+        }
+        return objectToToml(data);
+      }
+
       function pathToArray(name) {
         const firstBracket = name.indexOf('[');
         if (firstBracket === -1) return [name];
@@ -600,7 +669,31 @@ function editPage(
         return normalize(root);
       }
 
-      // Array UI handlers: add/remove
+      function updatePreview() {
+        const form = document.getElementById("config-form");
+        const data = formToJson(form);
+        const text = toTomlPreview(data);
+        const ta = document.getElementById("previewToml");
+        if (ta) ta.value = text;
+      }
+
+      // Initialize and live-update preview
+      window.addEventListener("DOMContentLoaded", updatePreview);
+      document.addEventListener("input", (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement)) return;
+        updatePreview();
+      });
+      document.addEventListener("click", (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLElement)) return;
+        if (t.matches(".add-item, .remove-item")) {
+          // Let DOM update, then refresh preview
+          setTimeout(updatePreview, 0);
+        }
+      });
+
+      // Array UI handlers: add/remove (existing)
       document.addEventListener("click", (e) => {
         const t = e.target;
         if (!(t instanceof HTMLElement)) return;
@@ -624,7 +717,6 @@ function editPage(
         const form = document.getElementById("config-form");
         const data = formToJson(form);
 
-        // Avoid TS-only 'as' assertions in browser JS:
         const fileRelEl = document.getElementById("fileRel");
         const sourcePathEl = document.getElementById("sourcePath");
         const originalTextEl = document.getElementById("originalText");
