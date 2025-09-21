@@ -831,7 +831,8 @@ function walkPatch(
   ]);
   let outText = text;
 
-  for (const k of keys) {
+  for (const k of keys)
+  {
     const oldVal = oldObj ? oldObj[k] : undefined;
     const newVal = newObj ? newObj[k] : undefined;
 
