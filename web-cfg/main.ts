@@ -18,7 +18,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
 import * as toml from "https://deno.land/std@0.224.0/toml/mod.ts";
-
 // ---------------- Types and Config ----------------
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
@@ -36,8 +35,12 @@ function parseArgs(args: string[]): AppConfig {
     port: 8787,
   };
   for (const a of args) {
-    if (a.startsWith("--root=")) config.root = path.resolve(a.substring("--root=".length));
-    if (a.startsWith("--port=")) config.port = Number(a.substring("--port=".length)) || 8787;
+    if (a.startsWith("--root=")) {
+      config.root = path.resolve(a.substring("--root=".length));
+    }
+    if (a.startsWith("--port=")) {
+      config.port = Number(a.substring("--port=".length)) || 8787;
+    }
     if (a.startsWith("--auth=")) {
       const cred = a.substring("--auth=".length);
       const idx = cred.indexOf(":");
@@ -77,7 +80,9 @@ function checkAuth(req: Request): boolean {
 function ensureInsideRoot(candidate: string, root: string) {
   const full = path.resolve(candidate);
   const normalizedRoot = path.resolve(root);
-  if (!full.startsWith(normalizedRoot + path.SEPARATOR) && full !== normalizedRoot) {
+  if (
+    !full.startsWith(normalizedRoot + path.SEPARATOR) && full !== normalizedRoot
+  ) {
     throw new Error("Path is outside the permitted root directory");
   }
   return full;
@@ -102,13 +107,84 @@ async function pickSourceFile(requested: string): Promise<string | null> {
   return null;
 }
 
-async function readTomlFile(filePath: string): Promise<{ data: Json; text: string }> {
+async function readTomlFile(
+  filePath: string,
+): Promise<{ data: Json; text: string }> {
   const text = await Deno.readTextFile(filePath);
-  const data = toml.parse(text) as Json;
+
+  // Accept unquoted string values on input:
+  // - Lines like: key = value   -> will be treated as: key = "value"
+  // - Only when value looks like a bare string that TOML would normally reject.
+  // - We keep numbers, booleans, dates, arrays, inline tables, quoted strings untouched.
+  // - Works per section; comments preserved.
+  const relaxed = (() => {
+    const lines = text.split(/\r?\n/);
+    const sectionHeaderRe = /^\s*\[[^\]]+\]\s*$/;
+    const assignRe =
+      /^(\s*[^#\s][^=]*?[^=\s]\s*=\s*)([^#"'\[\{#][^#]*?)(\s*(#.*)?)$/;
+    //            ^lhs------------^   ^candidate value^   ^trailing comment^
+
+    function looksLikeBareString(v: string): boolean {
+      const trimmed = v.trim();
+
+      // Already quoted?
+      if (trimmed.startsWith('"') || trimmed.startsWith("'")) return false;
+
+      // Inline arrays / tables
+      if (trimmed.startsWith("[") || trimmed.startsWith("{")) return false;
+
+      // Booleans
+      if (/^(true|false)$/i.test(trimmed)) return false;
+
+      // Numbers (int/float/_ separators)
+      if (/^[+-]?\d[\d_]*(\.\d[\d_]*)?([eE][+-]?\d+)?$/.test(trimmed)) {
+        return false;
+      }
+
+      // Date / datetime
+      if (
+        /^\d{4}-\d{2}-\d{2}(?:[ tT]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/
+          .test(trimmed)
+      ) {
+        return false;
+      }
+
+      // Empty or whitespace only — keep as-is
+      if (trimmed.length === 0) return false;
+
+      // If contains an inline comment delimiter, the assignRe already split it out;
+      // here we just ensure we won't break things that already look TOML-valid.
+      return true;
+    }
+
+    return lines
+      .map((line) => {
+        if (sectionHeaderRe.test(line)) return line; // section header
+        const m = line.match(assignRe);
+        if (!m) return line;
+
+        const lhs = m[1];
+        const rawVal = m[2];
+        const tail = m[3] ?? "";
+
+        if (!looksLikeBareString(rawVal)) return line;
+
+        // Quote while preserving inner content and escapes minimally.
+        const quoted = `"${
+          rawVal.trim().replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+        }"`;
+        return `${lhs}${quoted}${tail}`;
+      })
+      .join("\n");
+  })();
+
+  const data = toml.parse(relaxed) as Json;
   return { data, text };
 }
 
 function toToml(data: Json): string {
+  // On output, we always produce TOML-compliant text where string values are quoted.
+  // std toml.stringify already emits quoted strings; no change needed beyond using it.
   if (data === null || typeof data !== "object" || Array.isArray(data)) {
     return toml.stringify({ value: data as unknown });
   }
@@ -120,7 +196,16 @@ function toToml(data: Json): string {
 type SchemaRule =
   & {
     // dotted path, e.g., "server.port"
-    type?: "string" | "number" | "boolean" | "date" | "datetime-local" | "color" | "email" | "url" | "password";
+    type?:
+      | "string"
+      | "number"
+      | "boolean"
+      | "date"
+      | "datetime-local"
+      | "color"
+      | "email"
+      | "url"
+      | "password";
     required?: boolean;
     min?: number;
     max?: number;
@@ -134,7 +219,14 @@ type SchemaRule =
 
 // Extend this with your known keys
 const SCHEMA: Record<string, SchemaRule> = {
-  "server.port": { type: "number", min: 1, max: 65535, step: 1, required: true, title: "Port" },
+  "server.port": {
+    type: "number",
+    min: 1,
+    max: 65535,
+    step: 1,
+    required: true,
+    title: "Port",
+  },
   "server.host": { type: "string", required: true, placeholder: "0.0.0.0" },
   "admin.email": { type: "email", required: true },
   "theme.accent": { type: "color" },
@@ -165,16 +257,23 @@ function joinPath(parts: string[]): string {
   return parts.join(".");
 }
 
-function inferTypeFromValue(keyPath: string[], value: Json): string | undefined {
+function inferTypeFromValue(
+  keyPath: string[],
+  value: Json,
+): string | undefined {
   const key = keyPath[keyPath.length - 1]?.toLowerCase() || "";
   if (typeof value === "boolean") return "checkbox";
   if (typeof value === "number") return "number";
   if (typeof value === "string") {
     const v = value as string;
     if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return "date";
-    if (/^\d{4}-\d{2}-\d{2}[ tT]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?$/.test(v)) return "datetime-local";
+    if (/^\d{4}-\d{2}-\d{2}[ tT]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?$/.test(v)) {
+      return "datetime-local";
+    }
     if (/^#[0-9A-Fa-f]{6}$/.test(v)) return "color";
-    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) || key.includes("email")) return "email";
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) || key.includes("email")) {
+      return "email";
+    }
     if (/^https?:\/\//i.test(v) || key.includes("url")) return "url";
     if (/(pass|password|secret|token)$/i.test(key)) return "password";
     return "text";
@@ -206,7 +305,9 @@ function renderPrimitiveInput(keyPath: string[], value: Json) {
     else attrs.push('step="any"');
   }
   if (rule?.pattern) attrs.push(`pattern="${escapeHtml(rule.pattern)}"`);
-  if (rule?.placeholder) attrs.push(`placeholder="${escapeHtml(rule.placeholder)}"`);
+  if (rule?.placeholder) {
+    attrs.push(`placeholder="${escapeHtml(rule.placeholder)}"`);
+  }
 
   const labelTitle = rule?.title || keyPath[keyPath.length - 1] || "";
 
@@ -214,19 +315,30 @@ function renderPrimitiveInput(keyPath: string[], value: Json) {
     const checked = typeof value === "boolean" ? value : false;
     return `
       <label title="${escapeHtml(labelTitle)}">
-        <input type="checkbox" name="${escapeHtml(name)}" ${checked ? "checked" : ""} ${attrs.join(" ")} />
+        <input type="checkbox" name="${escapeHtml(name)}" ${
+      checked ? "checked" : ""
+    } ${attrs.join(" ")} />
       </label>
     `;
   }
 
   if (typeAttr === "number") {
-    const numVal = typeof value === "number" && Number.isFinite(value) ? value : "";
-    return `<input type="number" name="${escapeHtml(name)}" value="${numVal}" ${attrs.join(" ")} />`;
+    const numVal = typeof value === "number" && Number.isFinite(value)
+      ? value
+      : "";
+    return `<input type="number" name="${escapeHtml(name)}" value="${numVal}" ${
+      attrs.join(" ")
+    } />`;
   }
 
   // text-like inputs
-  const str = value === null || typeof value === "boolean" || typeof value === "number" ? String(value ?? "") : (value as string);
-  return `<input type="${escapeHtml(typeAttr)}" name="${escapeHtml(name)}" value="${escapeHtml(str)}" ${attrs.join(" ")} />`;
+  const str =
+    value === null || typeof value === "boolean" || typeof value === "number"
+      ? String(value ?? "")
+      : (value as string);
+  return `<input type="${escapeHtml(typeAttr)}" name="${
+    escapeHtml(name)
+  }" value="${escapeHtml(str)}" ${attrs.join(" ")} />`;
 }
 
 function renderArray(keyPath: string[], arr: Json[]): string {
@@ -237,7 +349,9 @@ function renderArray(keyPath: string[], arr: Json[]): string {
       return `
         <div class="array-item">
           ${renderValue(itemPath, v)}
-          <button class="remove-item" data-path="${escapeHtml(inputName(itemPath))}" type="button">Remove</button>
+          <button class="remove-item" data-path="${
+        escapeHtml(inputName(itemPath))
+      }" type="button">Remove</button>
         </div>
       `;
     })
@@ -250,7 +364,9 @@ function renderArray(keyPath: string[], arr: Json[]): string {
       <div data-array="${escapeHtml(containerName)}">
         ${itemsHtml || '<div class="empty-note">No items</div>'}
       </div>
-      <button class="add-item" data-path="${escapeHtml(containerName)}" type="button">Add item</button>
+      <button class="add-item" data-path="${
+    escapeHtml(containerName)
+  }" type="button">Add item</button>
     </fieldset>
   `;
 }
@@ -349,8 +465,11 @@ function indexPage(): string {
 function browsePage(list: Array<{ rel: string; size: number }>): string {
   const rows = list
     .map(
-      (f) => `<tr>
-      <td><a href="/edit?file=${encodeURIComponent(f.rel)}">${escapeHtml(f.rel)}</a></td>
+      (f) =>
+        `<tr>
+      <td><a href="/edit?file=${encodeURIComponent(f.rel)}">${
+          escapeHtml(f.rel)
+        }</a></td>
       <td>${f.size}</td>
     </tr>`,
     )
@@ -362,16 +481,25 @@ function browsePage(list: Array<{ rel: string; size: number }>): string {
         <a href="/">Home</a>
       </nav>
     </header>
-    <p class="tip">Listing *.conf plus *.conf.example and *.conf.template under: <span class="path">${escapeHtml(app.root)}</span></p>
+    <p class="tip">Listing *.conf plus *.conf.example and *.conf.template under: <span class="path">${
+    escapeHtml(app.root)
+  }</span></p>
     <table class="file-list">
       <thead><tr><th>Path</th><th>Size (bytes)</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="2"><em>No files found</em></td></tr>'}</tbody>
+      <tbody>${
+    rows || '<tr><td colspan="2"><em>No files found</em></td></tr>'
+  }</tbody>
     </table>
   `;
   return pageLayout(body);
 }
 
-function editPage(fileRel: string, usingPath: string, data: Json, originalText: string): string {
+function editPage(
+  fileRel: string,
+  usingPath: string,
+  data: Json,
+  originalText: string,
+): string {
   const formHtml = renderValue([], data);
   const body = `
     <header>
@@ -384,6 +512,12 @@ function editPage(fileRel: string, usingPath: string, data: Json, originalText: 
     <p class="tip">
       Source file used: <span class="path">${escapeHtml(path.relative(app.root, usingPath))}</span>
     </p>
+
+    <fieldset>
+      <legend>Original text (after input normalization)</legend>
+      <textarea id="originalTextView" readonly style="width:100%;height:200px;font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">${escapeHtml(originalText)}</textarea>
+    </fieldset>
+
     <form id="config-form">
       ${formHtml}
       <div class="actions">
@@ -489,11 +623,20 @@ function editPage(fileRel: string, usingPath: string, data: Json, originalText: 
       async function save(kind) {
         const form = document.getElementById("config-form");
         const data = formToJson(form);
-        const fileRel = (document.getElementById("fileRel") as HTMLInputElement).value;
-        const sourcePath = (document.getElementById("sourcePath") as HTMLInputElement).value;
-        const originalText = (document.getElementById("originalText") as HTMLInputElement).value;
-        const saveAs = (document.getElementById("saveAs") as HTMLInputElement).value.trim();
-        const preserve = (document.getElementById("preserveFmt") as HTMLInputElement).checked;
+
+        // Avoid TS-only 'as' assertions in browser JS:
+        const fileRelEl = document.getElementById("fileRel");
+        const sourcePathEl = document.getElementById("sourcePath");
+        const originalTextEl = document.getElementById("originalText");
+        const saveAsEl = document.getElementById("saveAs");
+        const preserveEl = document.getElementById("preserveFmt");
+
+        const fileRel = fileRelEl && "value" in fileRelEl ? fileRelEl.value : "";
+        const sourcePath = sourcePathEl && "value" in sourcePathEl ? sourcePathEl.value : "";
+        const originalText = originalTextEl && "value" in originalTextEl ? originalTextEl.value : "";
+        const saveAs = saveAsEl && "value" in saveAsEl ? saveAsEl.value.trim() : "";
+        const preserve = !!(preserveEl && "checked" in preserveEl && preserveEl.checked);
+
         const body = {
           fileRel,
           sourcePath,
@@ -526,7 +669,7 @@ function editPage(fileRel: string, usingPath: string, data: Json, originalText: 
 // ---------------- Best-effort formatter-preserving patching ----------------
 
 function quoteTomlString(s: string): string {
-  // Basic TOML string quoting (doesn't handle multiline or special escapes beyond backslash/quote)
+  // Always quote strings when writing, per TOML specification.
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
@@ -538,7 +681,12 @@ function valueToTomlScalar(v: Json): string | null {
   return null;
 }
 
-function patchScalarInSection(text: string, sectionPath: string[], key: string, newValToml: string): { text: string; patched: boolean } {
+function patchScalarInSection(
+  text: string,
+  sectionPath: string[],
+  key: string,
+  newValToml: string,
+): { text: string; patched: boolean } {
   // Find section header [a.b] (or root if sectionPath.length===0), then replace "key = old" in that section.
   const lines = text.split(/\r?\n/);
   let inSection = sectionPath.length === 0;
@@ -556,7 +704,11 @@ function patchScalarInSection(text: string, sectionPath: string[], key: string, 
     if (!inSection) continue;
     // Within the section (or root), find key = ...
     // Allow spaces, inline comments, and different quoting
-    const keyRe = new RegExp(`^(\\s*)(${key.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")})\\s*=\\s*([^#]*)(\\s*(#.*)?)$`);
+    const keyRe = new RegExp(
+      `^(\\s*)(${
+        key.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")
+      })\\s*=\\s*([^#]*)(\\s*(#.*)?)$`,
+    );
     const km = lines[i].match(keyRe);
     if (km) {
       const indent = km[1] ?? "";
@@ -572,11 +724,19 @@ function patchScalarInSection(text: string, sectionPath: string[], key: string, 
   return { text: lines.join("\n"), patched };
 }
 
-function walkPatch(text: string, oldObj: any, newObj: any, pathAcc: string[] = []): { text: string; patchedAny: boolean } {
+function walkPatch(
+  text: string,
+  oldObj: any,
+  newObj: any,
+  pathAcc: string[] = [],
+): { text: string; patchedAny: boolean } {
   let patchedAny = false;
 
   // For nested objects, descend into sections. For scalars at any depth, try to patch in place.
-  const keys = new Set<string>([...Object.keys(oldObj || {}), ...Object.keys(newObj || {})]);
+  const keys = new Set<string>([
+    ...Object.keys(oldObj || {}),
+    ...Object.keys(newObj || {}),
+  ]);
   let outText = text;
 
   for (const k of keys) {
@@ -593,7 +753,10 @@ function walkPatch(text: string, oldObj: any, newObj: any, pathAcc: string[] = [
       const res = patchScalarInSection(outText, sectionPath, k, newScalar);
       outText = res.text;
       patchedAny = patchedAny || res.patched;
-    } else if (newVal && typeof newVal === "object" && !Array.isArray(newVal) && oldVal && typeof oldVal === "object" && !Array.isArray(oldVal)) {
+    } else if (
+      newVal && typeof newVal === "object" && !Array.isArray(newVal) &&
+      oldVal && typeof oldVal === "object" && !Array.isArray(oldVal)
+    ) {
       // both objects → descend
       const res = walkPatch(outText, oldVal, newVal, [...pathAcc, k]);
       outText = res.text;
@@ -614,10 +777,14 @@ function jsonHeaders() {
 
 async function handleIndex(req: Request): Promise<Response> {
   if (!checkAuth(req)) return unauthorized();
-  return new Response(indexPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
+  return new Response(indexPage(), {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
 }
 
-async function collectConfFiles(root: string): Promise<Array<{ rel: string; size: number }>> {
+async function collectConfFiles(
+  root: string,
+): Promise<Array<{ rel: string; size: number }>> {
   const out: Array<{ rel: string; size: number }> = [];
   for await (const entry of Deno.readDir(root)) {
     // recursive helper
@@ -629,7 +796,10 @@ async function collectConfFiles(root: string): Promise<Array<{ rel: string; size
         await walk(p);
       } else if (e.isFile) {
         const rel = path.relative(root, p);
-        if (rel.endsWith(".conf") || rel.endsWith(".conf.example") || rel.endsWith(".conf.template")) {
+        if (
+          rel.endsWith(".conf") || rel.endsWith(".conf.example") ||
+          rel.endsWith(".conf.template")
+        ) {
           const st = await Deno.stat(p);
           out.push({ rel, size: st.size });
         }
@@ -644,7 +814,9 @@ async function collectConfFiles(root: string): Promise<Array<{ rel: string; size
 async function handleBrowse(req: Request): Promise<Response> {
   if (!checkAuth(req)) return unauthorized();
   const list = await collectConfFiles(app.root);
-  return new Response(browsePage(list), { headers: { "content-type": "text/html; charset=utf-8" } });
+  return new Response(browsePage(list), {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
 }
 
 async function handleEdit(req: Request, url: URL): Promise<Response> {
@@ -657,11 +829,16 @@ async function handleEdit(req: Request, url: URL): Promise<Response> {
   if (!source) {
     const msg = pageLayout(`
       <h1>File not found</h1>
-      <p>Could not find: <span class="path">${escapeHtml(path.relative(app.root, candidate))}</span></p>
+      <p>Could not find: <span class="path">${
+      escapeHtml(path.relative(app.root, candidate))
+    }</span></p>
       <p>Also tried: <code>.example</code> and <code>.template</code> variants.</p>
       <p><a href="/">Back</a></p>
     `);
-    return new Response(msg, { headers: { "content-type": "text/html; charset=utf-8" }, status: 404 });
+    return new Response(msg, {
+      headers: { "content-type": "text/html; charset=utf-8" },
+      status: 404,
+    });
   }
 
   try {
@@ -689,17 +866,33 @@ async function handleSave(req: Request): Promise<Response> {
     const originalText: string | undefined = payload.originalText;
 
     if (!fileRel || !sourcePathRel || !mode) {
-      return new Response(JSON.stringify({ error: "Missing required fields" }), { status: 400, headers: jsonHeaders() });
+      return new Response(
+        JSON.stringify({ error: "Missing required fields" }),
+        { status: 400, headers: jsonHeaders() },
+      );
     }
 
-    const sourcePath = ensureInsideRoot(path.join(app.root, sourcePathRel), app.root);
-    const defaultTarget = ensureInsideRoot(path.join(app.root, fileRel), app.root);
+    const sourcePath = ensureInsideRoot(
+      path.join(app.root, sourcePathRel),
+      app.root,
+    );
+    const defaultTarget = ensureInsideRoot(
+      path.join(app.root, fileRel),
+      app.root,
+    );
 
     let targetPath: string;
     if (mode === "overwrite") {
-      targetPath = (await fileExists(defaultTarget)) ? defaultTarget : sourcePath;
+      targetPath = (await fileExists(defaultTarget))
+        ? defaultTarget
+        : sourcePath;
     } else {
-      if (!saveAs) return new Response(JSON.stringify({ error: "Missing saveAs name" }), { status: 400, headers: jsonHeaders() });
+      if (!saveAs) {
+        return new Response(JSON.stringify({ error: "Missing saveAs name" }), {
+          status: 400,
+          headers: jsonHeaders(),
+        });
+      }
       targetPath = ensureInsideRoot(path.join(app.root, saveAs), app.root);
     }
 
@@ -728,12 +921,22 @@ async function handleSave(req: Request): Promise<Response> {
 
     await Deno.writeTextFile(targetPath, outText, { create: true });
 
-    return new Response(JSON.stringify({ ok: true, savedTo: path.relative(app.root, targetPath), preserved }), {
-      headers: jsonHeaders(),
-    });
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        savedTo: path.relative(app.root, targetPath),
+        preserved,
+      }),
+      {
+        headers: jsonHeaders(),
+      },
+    );
   } catch (e: any) {
     console.error(e);
-    return new Response(JSON.stringify({ error: e.message ?? String(e) }), { status: 500, headers: jsonHeaders() });
+    return new Response(JSON.stringify({ error: e.message ?? String(e) }), {
+      status: 500,
+      headers: jsonHeaders(),
+    });
   }
 }
 
@@ -741,19 +944,31 @@ console.log(`Root: ${app.root}`);
 // ---------------- Server ----------------
 
 console.log(`Root: ${app.root}`);
-console.log(`Listening on http://localhost:${app.port}${app.authUser ? " (Basic Auth enabled)" : ""}`);
+console.log(
+  `Listening on http://localhost:${app.port}${
+    app.authUser ? " (Basic Auth enabled)" : ""
+  }`,
+);
 
 serve(async (req) => {
-    try {
-        const url = new URL(req.url);
-        if (req.method === "GET" && url.pathname === "/") return await handleIndex(req);
-        if (req.method === "GET" && url.pathname === "/browse") return await handleBrowse(req);
-        if (req.method === "GET" && url.pathname === "/edit") return await handleEdit(req, url);
-        if (req.method === "POST" && url.pathname === "/save") return await handleSave(req);
-
-        return new Response("Not Found", { status: 404 });
-    } catch (e) {
-        console.error(e);
-        return new Response("Internal Server Error", { status: 500 });
+  try {
+    const url = new URL(req.url);
+    if (req.method === "GET" && url.pathname === "/") {
+      return await handleIndex(req);
     }
+    if (req.method === "GET" && url.pathname === "/browse") {
+      return await handleBrowse(req);
+    }
+    if (req.method === "GET" && url.pathname === "/edit") {
+      return await handleEdit(req, url);
+    }
+    if (req.method === "POST" && url.pathname === "/save") {
+      return await handleSave(req);
+    }
+
+    return new Response("Not Found", { status: 404 });
+  } catch (e) {
+    console.error(e);
+    return new Response("Internal Server Error", { status: 500 });
+  }
 }, { port: app.port });
