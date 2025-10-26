@@ -1,8 +1,10 @@
-# TOML Config Editor (Deno)
-A minimal local web app to view and edit TOML-based “.conf” files using your browser. It:
-- Opens any .conf file under a chosen root directory, or falls back to a .conf.example / .conf.template if the target file doesn’t exist.
+# INI Config Editor (Deno)
+A minimal local web app to view and edit INI-based “.conf” files using your browser. It:
+
+- Opens any .conf or .ini file under a chosen root directory, or falls back to a .conf.example / .conf.template if the target file doesn’t exist.
+
 - Renders nested objects/arrays into an HTML form with sensible field types (booleans, numbers, date, datetime-local, color, email, url, password).
-- Supports a “best-effort” preserve-format mode that patches scalar values into the original TOML text to keep comments and layout.
+- Supports a “best-effort” preserve-format mode that patches scalar values into the original INI text to keep comments and layout.
 - Lets you save changes back to the original file or “Save As” to a new path.
 - Offers a directory browser to discover config files.
 - Supports basic validation via a small, pluggable schema (min/max, pattern, enum, required, type hints).
@@ -11,7 +13,7 @@ A minimal local web app to view and edit TOML-based “.conf” files using your
 ## Table of Contents
 - Features
 - Quick Start
-- Installing Deno on Debian/Ubuntu
+- Installing Deno on Debian/Ubuntu/Raspberry Pi OS
 - Running the App
 - Usage
 - Validation Schema
@@ -23,7 +25,7 @@ A minimal local web app to view and edit TOML-based “.conf” files using your
 - License
 
 ## Features
-- Edit .conf TOML files in the browser
+- Edit .conf INI files in the browser
 - Automatic fallback to .conf.example or .conf.template
 - HTML5 input types for common patterns (date, datetime-local, color, email, url, password)
 - Array add/remove UI
@@ -136,9 +138,9 @@ Example rule ideas:
 You can expand this schema to enforce domain-specific rules and improve form fidelity.
 ## Preserve Formatting and Comments
 When “Preserve formatting and comments” is enabled:
-- The app parses the original TOML and tries to patch only scalar values (booleans, numbers, strings) in place, preserving lines, comments, and spacing.
+- The app parses the original INI and tries to patch only scalar values (booleans, numbers, strings) in place, preserving lines, comments, and spacing.
 - If a key can’t be safely located or if complex changes are required (arrays, nested tables added/removed), the app falls back to standard re-stringification.
-- This is a best-effort approach. For full fidelity including arrays/tables and nuanced formatting, consider integrating a TOML library that supports true round-trip preservation.
+- This is a best-effort approach. For full fidelity including arrays/tables and nuanced formatting, consider integrating a INI library that supports true round-trip preservation.
 
 ## Security and Permissions
 - Root sandbox: The app restricts file operations to the directory passed via --root, preventing path traversal outside of that directory.
@@ -161,9 +163,9 @@ sudo chown confedit:confedit /opt/conf-editor
 1. Place project files in /opt/conf-editor (or bind-mount your repo there), owned by confedit.
 2. Create a systemd unit file:
 ``` ini
-# /etc/systemd/system/toml-config-editor.service
+# /etc/systemd/system/INI-config-editor.service
 [Unit]
-Description=TOML Config Editor (Deno)
+Description=INI Config Editor (Deno)
 After=network-online.target
 Wants=network-online.target
 
@@ -196,9 +198,9 @@ WantedBy=multi-user.target
 1. Reload and start:
 ``` bash
 sudo systemctl daemon-reload
-sudo systemctl enable toml-config-editor.service
-sudo systemctl start toml-config-editor.service
-sudo systemctl status toml-config-editor.service
+sudo systemctl enable INI-config-editor.service
+sudo systemctl start INI-config-editor.service
+sudo systemctl status INI-config-editor.service
 ```
 If using Basic Auth or sensitive configs, prefer running behind an HTTPS reverse proxy (Nginx, Caddy, etc.).
 ## Development
@@ -206,7 +208,7 @@ If using Basic Auth or sensitive configs, prefer running behind an HTTPS reverse
     - deno run --allow-read --allow-write --allow-net main.ts --root=.
 
 - Consider adding a schema for your specific keys to improve input types and validation.
-- For debugging TOML parsing issues, print the parsed object or capture server logs.
+- For debugging INI parsing issues, print the parsed object or capture server logs.
 - For local TLS testing, use a reverse proxy or self-signed certs; Deno’s standard HTTP serve is plain HTTP.
 
 ## FAQ
@@ -217,7 +219,7 @@ If using Basic Auth or sensitive configs, prefer running behind an HTTPS reverse
     - No. The app enforces a root directory sandbox. Pass a different --root to work elsewhere.
 
 - What about other config formats?
-    - This app targets TOML. You could add parsers for YAML/JSON and switch based on extension, but that’s beyond the current scope.
+    - This app targets INI. You could add parsers for YAML/JSON and switch based on extension, but that’s beyond the current scope.
 
 - How do I add custom validation or enums?
     - Extend the schema object with rules keyed by dotted paths. You can also adapt the renderer to emit elements when enum is present.LicenseMIT (or your preferred license)If you run into issues or have feature requests, please open an issue or share details about your config structure and desired validation rules.
